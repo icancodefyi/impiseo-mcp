@@ -12,6 +12,7 @@
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.json",
     "keygen": "tsx src/keygen.ts",
+    "check": "tsx scripts/check.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
