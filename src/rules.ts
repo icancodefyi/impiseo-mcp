@@ -10,7 +10,7 @@ export type Rec = {
   action: string;
   impact: number;
   count?: number;
-  paths?: { path: string; impressions: number }[];
+  paths?: { path: string; impressions: number; title?: string | null; metaDescription?: string | null; wordCount?: number }[];
 };
 
 export type EnrichedContent = PageContentDoc & {
@@ -224,7 +224,7 @@ const GROUP_LABELS: Record<string, { title: (n: number) => string; action: strin
   },
 };
 
-function groupMechanicalRecs(recs: Rec[]): Rec[] {
+function groupMechanicalRecs(recs: Rec[], contentsByPath: Map<string, EnrichedContent>): Rec[] {
   const grouped: Rec[] = [];
   const bySignal = new Map<string, Rec[]>();
 
@@ -253,7 +253,16 @@ function groupMechanicalRecs(recs: Rec[]): Rec[] {
     const paths = members
       .filter((m) => m.path)
       .sort((a, b) => b.impact - a.impact)
-      .map((m) => ({ path: m.path!, impressions: m.impact }));
+      .map((m) => {
+        const content = m.path ? contentsByPath.get(m.path) : undefined;
+        return {
+          path: m.path!,
+          impressions: m.impact,
+          title: content?.title ?? null,
+          metaDescription: content?.metaDescription ?? null,
+          wordCount: content?.wordCount,
+        };
+      });
     grouped.push({
       id: `group::${signal}`,
       type: members[0].type,
@@ -292,5 +301,6 @@ export function generateRecommendations(inputs: RuleInputs): Rec[] {
 
   recs.push(...ruleStrikingDistance(inputs));
 
-  return groupMechanicalRecs(recs).sort((a, b) => b.impact - a.impact).slice(0, 40);
+  const contentsByPath = new Map(inputs.contents.map((c) => [c.path, c]));
+  return groupMechanicalRecs(recs, contentsByPath).sort((a, b) => b.impact - a.impact).slice(0, 40);
 }

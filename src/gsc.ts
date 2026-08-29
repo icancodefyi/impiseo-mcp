@@ -37,7 +37,7 @@ export function iso(d: Date) {
   return d.toISOString().slice(0, 10);
 }
 
-function addDays(d: Date, n: number) {
+export function addDays(d: Date, n: number) {
   const x = new Date(d);
   x.setDate(x.getDate() + n);
   return x;
@@ -150,15 +150,17 @@ export async function fetchOverview(opts: {
   };
 }
 
-/** Top queries over a window with optional per-page breakdown. */
+/** Top queries over a window, sorted by clicks, with offset paging. */
 export async function fetchQueries(opts: {
   site: string;
   accessToken: string;
   days: number;
   limit: number;
+  offset?: number;
 }) {
   const days = Math.min(Math.max(opts.days || 28, 1), 90);
   const limit = Math.min(Math.max(opts.limit || 100, 1), 300);
+  const offset = Math.min(Math.max(opts.offset ?? 0, 0), 25000);
   const searchconsole = getSearchConsole(opts.accessToken);
   const end = addDays(new Date(), -3);
   const start = addDays(end, -(days - 1));
@@ -170,6 +172,7 @@ export async function fetchQueries(opts: {
       endDate: iso(end),
       dimensions: ["query"],
       rowLimit: limit,
+      startRow: offset,
     },
   });
   return toMetricRows((data.rows ?? []) as GscRow[]).sort(
@@ -177,15 +180,17 @@ export async function fetchQueries(opts: {
   );
 }
 
-/** Top pages over a window. */
+/** Top pages over a window, sorted by clicks, with offset paging. */
 export async function fetchPages(opts: {
   site: string;
   accessToken: string;
   days: number;
   limit: number;
+  offset?: number;
 }) {
   const days = Math.min(Math.max(opts.days || 28, 1), 90);
   const limit = Math.min(Math.max(opts.limit || 50, 1), 300);
+  const offset = Math.min(Math.max(opts.offset ?? 0, 0), 25000);
   const searchconsole = getSearchConsole(opts.accessToken);
   const end = addDays(new Date(), -3);
   const start = addDays(end, -(days - 1));
@@ -197,6 +202,7 @@ export async function fetchPages(opts: {
       endDate: iso(end),
       dimensions: ["page"],
       rowLimit: limit,
+      startRow: offset,
     },
   });
   return toMetricRows((data.rows ?? []) as GscRow[]).sort(

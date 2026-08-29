@@ -25,23 +25,58 @@ const tools = await client.listTools();
 console.log("Connected OK -", tools.tools.length, "tools:", tools.tools.map((t: any) => t.name).join(", "));
 
 const profile = await client.callTool({ name: "get_profile", arguments: {} });
-const p = JSON.parse((profile.content as any)[0].text) as { email: string; activeProperty: string };
-console.log("\nAccount:  ", p.email);
-console.log("Property: ", p.activeProperty);
+const p = (profile.structuredContent as any) ?? {};
+console.log("\nAccount:  ", (p as any).email);
+console.log("Property: ", (p as any).activeProperty);
+if ((p as any).ok !== true) {
+  console.error("  ✗ envelope missing ok:true in structuredContent");
+  process.exit(1);
+}
 
 const status = await client.callTool({ name: "get_crawl_status", arguments: {} });
-console.log("\nCrawl status:", (status.content as any)[0].text);
+const s = (status.structuredContent as any) ?? {};
+console.log("\nCrawl status: ", `${(s as any).pagesWithMetrics} pages w/ metrics, ${(s as any).pagesWithContent} content-crawled`);
 
 const overview = await client.callTool({ name: "get_overview", arguments: { days: 7 } });
-const o = JSON.parse((overview.content as any)[0].text) as {
-  range: { start: string; end: string };
-  totals: { clicks: number; impressions: number };
-  queries: { key: string; clicks: number }[];
-};
+const o = (overview.structuredContent as any) ?? {};
 console.log(
-  `\nGSC (${o.range.start} -> ${o.range.end}):`,
-  `${o.totals.clicks} clicks, ${o.totals.impressions} impressions`,
-  `| top query: "${o.queries[0]?.key}" (${o.queries[0]?.clicks} clicks)`
+  `\nGSC (${(o as any).range?.start} -> ${(o as any).range?.end}):`,
+  `${(o as any).totals?.clicks} clicks, ${(o as any).totals?.impressions} impressions`,
+  `| top query: "${(o as any).queries?.[0]?.key}" (${(o as any).queries?.[0]?.clicks} clicks)`
+);
+
+const q = await client.callTool({ name: "get_queries", arguments: { limit: 300, offset: 0 } });
+const qc = (q.structuredContent as any) ?? {};
+console.log(
+  "\nget_queries:",
+  `${(qc as any).count} rows @ offset ${(qc as any).offset},`,
+  `limit ${(qc as any).limit}; first: "${(qc as any).queries?.[0]?.key}";`,
+  "returns rows w/ title fields only if enriched (pages only)"
+);
+
+const pages = await client.callTool({ name: "get_pages", arguments: { limit: 100, offset: 0 } });
+const pc = (pages.structuredContent as any) ?? {};
+const firstPage = (pc as any).pages?.[0];
+console.log(
+  "\nget_pages:",
+  `${(pc as any).count} rows; first: "${firstPage?.path}"`,
+  `(title: ${firstPage?.title ? JSON.stringify(firstPage.title.slice(0, 40)) : "null"},`,
+  `meta: ${firstPage?.metaDescription ? "set" : "null"}, words: ${firstPage?.wordCount})`
+);
+
+const pd = await client.callTool({ name: "get_idea_detail", arguments: { ideaId: "nonexistent-id" } });
+const pdv = (pd.structuredContent as any) ?? {};
+console.log("\nget_idea_detail (missing):", (pdv as any).found === false ? "found:false (ok)" : "unexpected");
+
+const html = await client.callTool({
+  name: "get_page_html",
+  arguments: { page: "/upsc-topper/anuj-agnihotri-rank-1-2025", includeHtml: false },
+});
+const hv = (html.structuredContent as any) ?? {};
+console.log(
+  "\nget_page_html:",
+  `${(hv as any).httpStatus}, "${(hv as any).title?.slice(0, 50)}",`,
+  `${(hv as any).headings?.length} headings, ${(hv as any).wordCount} words`
 );
 
 await client.close();
