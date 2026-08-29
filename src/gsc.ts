@@ -304,6 +304,58 @@ function normalizePage(p: string): string {
   return x || "/";
 }
 
+export type QueryPagePair = {
+  query: string;
+  page: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+};
+
+/** All (query,page) pairs over a window, paged to the max depth — for full export and opportunities math. */
+export async function fetchAllQueryPagePairs(opts: {
+  site: string;
+  accessToken: string;
+  days: number;
+  maxRows?: number;
+}): Promise<QueryPagePair[]> {
+  const days = Math.min(Math.max(opts.days || 28, 1), 90);
+  const maxRows = Math.min(Math.max(opts.maxRows ?? 25000, 1), 25000);
+  const searchconsole = getSearchConsole(opts.accessToken);
+  const end = addDays(new Date(), -3);
+  const start = addDays(end, -(days - 1));
+
+  const out: QueryPagePair[] = [];
+  const chunk = 5000;
+  for (let startRow = 0; startRow < maxRows; startRow += chunk) {
+    const { data } = await searchconsole.searchanalytics.query({
+      siteUrl: opts.site,
+      requestBody: {
+        startDate: iso(start),
+        endDate: iso(end),
+        dimensions: ["query", "page"],
+        rowLimit: chunk,
+        startRow,
+      },
+    });
+    const rows = (data.rows ?? []) as GscRow[];
+    for (const r of rows) {
+      out.push({
+        query: r.keys?.[0] ?? "",
+        page: r.keys?.[1] ?? "",
+        clicks: r.clicks ?? 0,
+        impressions: r.impressions ?? 0,
+        ctr: r.ctr ?? 0,
+        position: r.position ?? 0,
+      });
+      if (out.length >= maxRows) return out;
+    }
+    if (rows.length < chunk) break;
+  }
+  return out;
+}
+
 /** Page-level rows over a window (for cross-tool joins). */
 export async function fetchPageRows(opts: {
   site: string;

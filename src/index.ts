@@ -8,6 +8,7 @@ import { getAccessToken, fetchOverview, fetchQueries, fetchPages, fetchQueryPage
 import { fetchPageHtml } from "./html.js";
 import { resolveApiKey } from "./keys.js";
 import { getRecommendations, type ConnectionsInput } from "./recs.js";
+import { computeQueryOpportunities } from "./opportunities.js";
 import { normalizePath } from "./url.js";
 
 const PORT = Number(process.env.PORT ?? 3777);
@@ -610,6 +611,55 @@ async function buildServer(userId: string): Promise<McpServer> {
       return ok({
         ...meta,
         html: args.includeHtml ? html : null,
+      });
+    }
+  );
+
+  server.registerTool(
+    "get_query_opportunities",
+    {
+      title: "Get query-level growth opportunities",
+      description:
+        "Runs the opportunities math across ALL queries (not just an ideas run): for every query, the best-ranking page, the words the page misses vs the query, projected clicks at top 3 and top 1, the headroom (clicks left on the table), intent, cluster, and a deterministic fixing suggestion. Sorted by headroom at top 3, descending. Live GSC + stored crawl content.",
+      inputSchema: {
+        site: z.string().optional().describe("Search Console property (URL). Defaults to the account's active property."),
+        days: z.number().int().min(1, "days must be between 1 and 90").max(90, "days must be between 1 and 90").optional().describe("Window length in days (default 28)."),
+        offset: z.number().int().min(0, "offset must be >= 0").max(25000, "offset must be <= 25000").optional().describe("Row offset for paging. Default 0."),
+        limit: z.number().int().min(1, "limit must be between 1 and 500").max(500, "limit must be between 1 and 500").optional().describe("Max rows (default 100)."),
+        minImpressions: z.number().int().min(0, "minImpressions must be >= 0").optional().describe("Only include queries with at least this many impressions (default 0 = all)."),
+        queryContains: z.string().optional().describe("Only include queries containing this substring (case-insensitive)."),
+        excludeBranded: z.boolean().optional().describe("Drop queries containing the brand token (default true)."),
+      },
+      outputSchema: envelope({
+        site: STR,
+        range: OBJ,
+        offset: NUM,
+        limit: NUM,
+        count: NUM,
+        total: NUM,
+        queries: OBJS,
+      }),
+    },
+    async (args) => {
+      const site = getSite(args.site);
+      const opportunities = await computeQueryOpportunities(userId, user, {
+        site,
+        days: args.days ?? 28,
+        minImpressions: args.minImpressions,
+        queryContains: args.queryContains,
+        excludeBranded: args.excludeBranded,
+      });
+      const offset = args.offset ?? 0;
+      const limit = args.limit ?? 100;
+      const page = opportunities.slice(offset, offset + limit);
+      return ok({
+        site,
+        range: windowRange(args.days ?? 28),
+        offset,
+        limit,
+        count: page.length,
+        total: opportunities.length,
+        queries: page,
       });
     }
   );
