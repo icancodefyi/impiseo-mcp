@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { getCollections, getDb } from "./db.js";
-import { getAccessToken, fetchOverview, fetchQueries, fetchPages } from "./gsc.js";
+import { getAccessToken, fetchOverview, fetchQueries, fetchPages, fetchQueryPages, fetchPageQueryPairs } from "./gsc.js";
 import { resolveApiKey } from "./keys.js";
 import { getRecommendations, type ConnectionsInput } from "./recs.js";
 
@@ -260,7 +260,173 @@ async function buildServer(userId: string): Promise<McpServer> {
     }
   );
 
+  server.registerTool(
+    "get_page_content",
+    {
+      title: "Get crawled page content",
+      description: "Returns the crawled on-page content we stored for pages of a site: title, meta description, headings, word count, structured data, http status. Filter by path prefix or list by traffic. Stored data — not live fetches.",
+      inputSchema: {
+        site: z.string().optional().describe("Search Console property (URL). Defaults to the active property."),
+        path: z.string().optional().describe("Exact normalized path to look up (e.g. /blog/post-1)."),
+        prefix: z.string().optional().describe("Path prefix to filter, e.g. /blog"),
+        limit: z.number().int().min(1).max(200).optional().describe("Max rows (default 200, sorted by impressions desc)."),
+      },
+    },
+    async (args) => {
+      const site = getSite(args.site);
+      const { page_content } = await getCollections();
+      const filter: Record<string, unknown> = { userId, siteUrl: site };
+      if (args.path) filter.path = args.path;
+      else if (args.prefix) filter.path = { $regex: `^${escapeRegex(args.prefix)}` };
+      const limit = Math.min(Math.max(args.limit ?? 200, 1), 500);
+      const docs = await page_content
+        .find(filter)
+        .sort({ fetchedAt: -1 })
+        .limit(limit)
+        .toArray();
+      const rows = docs.map(({ _id: _d, ...c }) => c);
+      if (args.path) {
+        const hit = rows[0];
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: hit
+                ? JSON.stringify(hit, null, 2)
+                : JSON.stringify({ error: "No crawled content for this path. Run Sync & analyze on the Pages page first." }, null, 2),
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify({ count: rows.length, pages: rows }, null, 2) }] };
+    }
+  );
+
+  server.registerTool(
+    "get_rec_enhancements",
+    {
+      title: "Get AI-enhanced recommendations",
+      description: "Returns the stored AI fix plans for recommendations (why, steps, draft title/meta, agent prompt), keyed by rec id. For a richer view of recommendations pairing with the rule output, see get_recommendations.",
+      inputSchema: {
+        site: z.string().optional().describe("Search Console property (URL). Defaults to the active property."),
+        recId: z.string().optional().describe("Specific rec id to fetch (e.g. /blog/post::missing-meta). Omit for all."),
+      },
+    },
+    async (args) => {
+      const site = getSite(args.site);
+      const { rec_enhancements } = await getCollections();
+      const filter: Record<string, unknown> = { userId, siteUrl: site };
+      if (args.recId) filter.recId = args.recId;
+      const docs = await rec_enhancements.find(filter).sort({ updatedAt: -1 }).toArray();
+      const rows = docs.map(({ _id: _d, userId: _u, siteUrl: _s, ...rest }) => rest);
+      return { content: [{ type: "text" as const, text: JSON.stringify({ count: rows.length, enhancements: rows }, null, 2) }] };
+    }
+  );
+
+  server.registerTool(
+    "get_idea_detail",
+    {
+      title: "Get a single idea's full detail",
+      description: "Returns one idea from the latest run — full evidence incl. top queries, covering pages, autocomplete phrasings, validation, plus the AI angle/outline if packaged.",
+      inputSchema: {
+        site: z.string().optional().describe("Search Console property (URL). Defaults to the active property."),
+        ideaId: z.string().describe("The idea's id (from get_ideas)."),
+      },
+    },
+    async (args) => {
+      const site = getSite(args.site);
+      const { idea_runs } = await getCollections();
+      const run = await idea_runs
+        .find({ userId, siteUrl: site })
+        .sort({ generatedAt: -1 })
+        .limit(1)
+        .next();
+      const idea = run?.ideas.find((i) => i.id === args.ideaId);
+      if (!idea) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "Idea not found in the latest run." }, null, 2) }] };
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify(idea, null, 2) }] };
+    }
+  );
+
+  server.registerTool(
+    "get_page_queries",
+    {
+      title: "Get queries ranking for a page",
+      description: "Live from Search Console: the queries that send traffic to a specific page, with clicks, impressions, CTR and position. Dimension pair [page, query] filtered by page.",
+      inputSchema: {
+        site: z.string().optional().describe("Search Console property (URL). Defaults to the active property."),
+        page: z.string().describe("The page path (e.g. /blog/post-1) or full URL."),
+        days: z.number().int().min(1).max(90).optional().describe("Window length in days (default 28)."),
+        limit: z.number().int().min(1).max(100).optional().describe("Max rows (default 50)."),
+      },
+    },
+    async (args) => {
+      const site = getSite(args.site);
+      const accessToken = await getAccessToken(user);
+      const rows = await fetchPageQueryPairs({
+        site,
+        accessToken,
+        page: args.page,
+        days: args.days ?? 28,
+        limit: args.limit ?? 50,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify({ page: args.page, queries: rows }, null, 2) }] };
+    }
+  );
+
+  server.registerTool(
+    "get_query_pages",
+    {
+      title: "Get pages ranking for a query",
+      description: "Live from Search Console: the pages ranking for a specific query, with clicks, impressions, CTR and position. Useful for seeing which page competes in a topic.",
+      inputSchema: {
+        site: z.string().optional().describe("Search Console property (URL). Defaults to the active property."),
+        query: z.string().describe("The exact query to filter by."),
+        days: z.number().int().min(1).max(90).optional().describe("Window length in days (default 28)."),
+        limit: z.number().int().min(1).max(100).optional().describe("Max rows (default 20)."),
+      },
+    },
+    async (args) => {
+      const site = getSite(args.site);
+      const accessToken = await getAccessToken(user);
+      const pages = await fetchQueryPages({
+        site,
+        accessToken,
+        query: args.query,
+        days: args.days ?? 28,
+        limit: args.limit ?? 20,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify({ query: args.query, pages }, null, 2) }] };
+    }
+  );
+
+  server.registerTool(
+    "list_idea_runs",
+    {
+      title: "List idea-generation runs",
+      description: "Returns the metadata (not the ideas) of every idea run for the site — generatedAt and stats — so you can see history and whether runs degraded.",
+      inputSchema: {
+        site: z.string().optional().describe("Search Console property (URL). Defaults to the active property."),
+      },
+    },
+    async (args) => {
+      const site = getSite(args.site);
+      const { idea_runs } = await getCollections();
+      const runs = await idea_runs
+        .find({ userId, siteUrl: site }, { projection: { ideas: 0 } })
+        .sort({ generatedAt: -1 })
+        .limit(20)
+        .toArray();
+      return { content: [{ type: "text" as const, text: JSON.stringify({ count: runs.length, runs }, null, 2) }] };
+    }
+  );
+
   return server;
+}
+
+function escapeRegex(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function readBody(req: IncomingMessage): Promise<unknown> {

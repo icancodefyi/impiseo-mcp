@@ -158,7 +158,7 @@ export async function fetchQueries(opts: {
   limit: number;
 }) {
   const days = Math.min(Math.max(opts.days || 28, 1), 90);
-  const limit = Math.min(Math.max(opts.limit || 50, 1), 200);
+  const limit = Math.min(Math.max(opts.limit || 100, 1), 300);
   const searchconsole = getSearchConsole(opts.accessToken);
   const end = addDays(new Date(), -3);
   const start = addDays(end, -(days - 1));
@@ -185,7 +185,7 @@ export async function fetchPages(opts: {
   limit: number;
 }) {
   const days = Math.min(Math.max(opts.days || 28, 1), 90);
-  const limit = Math.min(Math.max(opts.limit || 50, 1), 200);
+  const limit = Math.min(Math.max(opts.limit || 50, 1), 300);
   const searchconsole = getSearchConsole(opts.accessToken);
   const end = addDays(new Date(), -3);
   const start = addDays(end, -(days - 1));
@@ -202,4 +202,122 @@ export async function fetchPages(opts: {
   return toMetricRows((data.rows ?? []) as GscRow[]).sort(
     (a, b) => b.clicks - a.clicks
   );
+}
+
+/** Per-query ranking pages: dimensions ["query","page"], filtered to one query. */
+export async function fetchQueryPages(opts: {
+  site: string;
+  accessToken: string;
+  query: string;
+  days: number;
+  limit: number;
+}) {
+  const days = Math.min(Math.max(opts.days || 28, 1), 90);
+  const limit = Math.min(Math.max(opts.limit || 20, 1), 100);
+  const searchconsole = getSearchConsole(opts.accessToken);
+  const end = addDays(new Date(), -3);
+  const start = addDays(end, -(days - 1));
+
+  const { data } = await searchconsole.searchanalytics.query({
+    siteUrl: opts.site,
+    requestBody: {
+      startDate: iso(start),
+      endDate: iso(end),
+      dimensions: ["query", "page"],
+      rowLimit: limit,
+      dimensionFilterGroups: [
+        {
+          filters: [
+            {
+              dimension: "query",
+              operator: "equals",
+              expression: opts.query,
+            },
+          ],
+        },
+      ],
+    },
+  });
+  return ((data.rows ?? []) as GscRow[])
+    .map((r) => ({
+      query: r.keys?.[0] ?? "",
+      page: r.keys?.[1] ?? "",
+      clicks: r.clicks ?? 0,
+      impressions: r.impressions ?? 0,
+      ctr: r.ctr ?? 0,
+      position: r.position ?? 0,
+    }))
+    .sort((a, b) => b.clicks - a.clicks);
+}
+
+/** Per-page queries: dimensions ["page","query"], filtered client-side to one page. */
+export async function fetchPageQueryPairs(opts: {
+  site: string;
+  accessToken: string;
+  page: string;
+  days: number;
+  limit: number;
+}) {
+  const days = Math.min(Math.max(opts.days || 28, 1), 90);
+  const limit = Math.min(Math.max(opts.limit || 50, 1), 300);
+  const searchconsole = getSearchConsole(opts.accessToken);
+  const end = addDays(new Date(), -3);
+  const start = addDays(end, -(days - 1));
+
+  const want = normalizePage(opts.page);
+  const { data } = await searchconsole.searchanalytics.query({
+    siteUrl: opts.site,
+    requestBody: {
+      startDate: iso(start),
+      endDate: iso(end),
+      dimensions: ["page", "query"],
+      rowLimit: limit,
+    },
+  });
+  return ((data.rows ?? []) as GscRow[])
+    .map((r) => ({
+      page: r.keys?.[0] ?? "",
+      query: r.keys?.[1] ?? "",
+      clicks: r.clicks ?? 0,
+      impressions: r.impressions ?? 0,
+      ctr: r.ctr ?? 0,
+      position: r.position ?? 0,
+    }))
+    .filter((r) => normalizePage(r.page) === want)
+    .sort((a, b) => b.clicks - a.clicks);
+}
+
+function normalizePage(p: string): string {
+  let x = p.trim();
+  try {
+    x = new URL(x).pathname;
+  } catch {
+    /* already a path */
+  }
+  if (x.length > 1 && x.endsWith("/")) x = x.slice(0, -1);
+  return x || "/";
+}
+
+/** Page-level rows over a window (for cross-tool joins). */
+export async function fetchPageRows(opts: {
+  site: string;
+  accessToken: string;
+  days: number;
+  rowLimit: number;
+}): Promise<MetricRow[]> {
+  const days = Math.min(Math.max(opts.days || 28, 1), 90);
+  const searchconsole = getSearchConsole(opts.accessToken);
+  const end = addDays(new Date(), -3);
+  const start = addDays(end, -(days - 1));
+
+  const { data } = await searchconsole.searchanalytics.query({
+    siteUrl: opts.site,
+    requestBody: {
+      startDate: iso(start),
+      endDate: iso(end),
+      dimensions: ["page"],
+      rowLimit: opts.rowLimit,
+    },
+  });
+  return toMetricRows((data.rows ?? []) as GscRow[]);
 }
