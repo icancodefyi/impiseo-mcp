@@ -9,6 +9,7 @@ import { fetchPageHtml } from "./html.js";
 import { resolveApiKey } from "./keys.js";
 import { getRecommendations, type ConnectionsInput } from "./recs.js";
 import { computeQueryOpportunities } from "./opportunities.js";
+import { runPageAudit, type AuditSummary } from "./auditor.js";
 import { normalizePath } from "./url.js";
 
 const PORT = Number(process.env.PORT ?? 3777);
@@ -660,6 +661,67 @@ async function buildServer(userId: string): Promise<McpServer> {
         count: page.length,
         total: opportunities.length,
         queries: page,
+      });
+    }
+  );
+
+  server.registerTool(
+    "run_page_audit",
+    {
+      title: "Run a full-page Lighthouse + CrUX audit",
+      description:
+        "Live PageSpeed audit of any URL (like the Auditor tab / PageSpeed Insights): runs all four Lighthouse categories (performance, accessibility, best-practices, seo) in parallel and merges them, then returns a compact summary — category scores, real-user CrUX field data (LCP/INP/CLS/FCP with FAST/AVERAGE/SLOW categories and distributions), and the failing audits with concrete savings (unused JS bytes, render-blocking time, per-resource items). Lab scores come from Google's servers for one run; field data is 28-day real-user percentiles.",
+      inputSchema: {
+        url: z.string().min(1, "url is required").describe("The full page URL to audit (e.g. https://site.com/blog/post-1)."),
+        strategy: z.enum(["mobile", "desktop"]).optional().describe("Emulated device/connection strategy (default mobile)."),
+      },
+      outputSchema: envelope({
+        url: STR,
+        finalUrl: STR,
+        strategy: STR,
+        fetchedAt: STR,
+        scores: OBJ,
+        fieldData: OBJ,
+        failures: OBJS,
+        passedCounts: OBJ,
+        failedCounts: OBJ,
+        disabled: BOOL,
+        keyMissing: BOOL,
+        message: STR,
+      }),
+    },
+    async (args) => {
+      let parsed: URL;
+      try {
+        parsed = new URL(args.url);
+      } catch {
+        return fail("invalid url");
+      }
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        return fail("url must be http(s)");
+      }
+      const strategy = args.strategy ?? "mobile";
+      const outcome = await runPageAudit(parsed.toString(), strategy);
+      if (!outcome.ok) {
+        if (outcome.disabled) {
+          return ok({ disabled: true, message: outcome.error });
+        }
+        if (outcome.keyMissing) {
+          return ok({ keyMissing: true, message: outcome.error });
+        }
+        return fail(outcome.error);
+      }
+      const s: AuditSummary = outcome.summary;
+      return ok({
+        url: s.requestedUrl,
+        finalUrl: s.finalUrl,
+        strategy: s.strategy,
+        fetchedAt: s.fetchedAt,
+        scores: s.scores,
+        fieldData: s.fieldData,
+        failures: s.failures,
+        passedCounts: s.passedCounts,
+        failedCounts: s.failedCounts,
       });
     }
   );
