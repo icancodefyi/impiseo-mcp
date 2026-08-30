@@ -79,6 +79,23 @@ console.log(
   `${(hv as any).headings?.length} headings, ${(hv as any).wordCount} words`
 );
 
+const audit = await client.callTool({
+  name: "run_page_audit",
+  arguments: { url: "https://upscprepnotes.in/", strategy: "mobile" },
+});
+const av = (audit.structuredContent as any) ?? {};
+const ascores = av.scores ?? {};
+console.log(
+  "\nrun_page_audit:",
+  `perf ${ascores.performance ?? "-"}, a11y ${ascores.accessibility ?? "-"}, bp ${ascores["best-practices"] ?? "-"}, seo ${ascores.seo ?? "-"}`,
+  `| field overall: ${av.fieldData?.overall ?? "-"}`,
+  `| ${av.failures?.length ?? 0} failing audits,`,
+  `top: "${av.failures?.[0]?.title ?? "none"}" (${av.failures?.[0]?.displayValue ?? ""})`
+);
+if (av.disabled) {
+  console.error("  ✗ PSI API disabled — enable it on this key");
+}
+
 await client.close();
 console.log("\nAll green.");
 process.exit(0);
