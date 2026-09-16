@@ -1,0 +1,9 @@
+services:
+  mcp:
+    build: .
+    image: impiseo-mcp:latest
+    container_name: impiseo-mcp
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:3777:3777"
