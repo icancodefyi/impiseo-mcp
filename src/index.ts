@@ -74,7 +74,180 @@ function fail(message: string) {
 // Authentication / plumbing
 // ---------------------------------------------------------------------------
 
-async function authenticate(req: IncomingMessage): Promise<string> {
+type AuthContext = {
+  userId: string;
+  keyId: string;
+  client: string;
+};
+
+const clientBySession = new Map<string, string>();
+const clientByKey = new Map<string, string>();
+
+function detectClient(req: IncomingMessage, parsedBody: unknown, keyId?: string): string {
+  const customHeader = (req.headers["x-client"] as string | undefined)?.trim();
+  if (customHeader) {
+    if (keyId) clientByKey.set(keyId, customHeader);
+    return customHeader;
+  }
+
+  const sessionId = (req.headers["mcp-session-id"] as string | undefined)?.trim();
+  const ua = (req.headers["user-agent"] ?? "").toLowerCase();
+  const pb = parsedBody as Record<string, unknown> | undefined;
+  const paramsObj = (pb?.params && typeof pb.params === "object") ? (pb.params as Record<string, any>) : undefined;
+  const clientInfoName = String(
+    paramsObj?.clientInfo?.name ??
+    paramsObj?.client?.name ??
+    ""
+  ).toLowerCase();
+
+  const combined = `${clientInfoName} ${ua}`;
+  let detected: string | null = null;
+
+  if (combined.includes("claude-code") || combined.includes("claude code")) detected = "Claude Code";
+  else if (combined.includes("claude-desktop") || combined.includes("claude desktop")) detected = "Claude Desktop";
+  else if (combined.includes("claude")) detected = "Claude";
+  else if (combined.includes("cursor")) detected = "Cursor";
+  else if (combined.includes("windsurf") || combined.includes("codeium")) detected = "Windsurf";
+  else if (combined.includes("copilot") || combined.includes("github-copilot")) detected = "Copilot";
+  else if (combined.includes("opencode")) detected = "OpenCode";
+  else if (combined.includes("codex")) detected = "Codex";
+  else if (combined.includes("chatgpt") || combined.includes("openai")) detected = "ChatGPT";
+  else if (combined.includes("antigravity")) detected = "Antigravity";
+  else if (combined.includes("lovable")) detected = "Lovable";
+  else if (combined.includes("impiseo-dashboard") || combined.includes("dashboard")) detected = "Dashboard";
+  else if (combined.includes("postman") || combined.includes("insomnia")) detected = "API Client";
+  else if (combined.includes("curl")) detected = "cURL";
+  else if (clientInfoName) detected = clientInfoName;
+
+  if (detected) {
+    if (sessionId) clientBySession.set(sessionId, detected);
+    if (keyId) clientByKey.set(keyId, detected);
+    return detected;
+  }
+
+  if (sessionId && clientBySession.has(sessionId)) {
+    return clientBySession.get(sessionId)!;
+  }
+  if (keyId && clientByKey.has(keyId)) {
+    return clientByKey.get(keyId)!;
+  }
+
+  if (ua.includes("node") || ua.includes("undici")) return "Node.js";
+  if (ua) return ua.slice(0, 40);
+  return "AI Agent";
+}
+
+function normalizeToolArgs(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object") return {};
+  const args = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+
+  if (typeof args.site === "string") out.site = args.site;
+  if (typeof args.days === "number") out.days = args.days;
+  if (typeof args.limit === "number") out.limit = args.limit;
+  if (typeof args.offset === "number") out.offset = args.offset;
+  if (typeof args.strategy === "string") out.strategy = args.strategy;
+
+  out.hasQuery = Boolean(args.query || args.queryContains || args.q);
+  out.hasPage = Boolean(args.page || args.url || args.path);
+
+  if (typeof args.query === "string" && args.query.trim()) {
+    out.query = args.query.trim().slice(0, 150);
+  } else if (typeof args.queryContains === "string" && args.queryContains.trim()) {
+    out.query = args.queryContains.trim().slice(0, 150);
+  }
+  return out;
+}
+
+function extractResultMetrics(structured: Record<string, unknown> | undefined, isError?: boolean): { ok: boolean; [key: string]: unknown } {
+  if (!structured || isError || structured.ok === false) {
+    return {
+      ok: false,
+      error: typeof structured?.error === "string" ? structured.error.slice(0, 200) : (isError ? "tool_error" : "failed"),
+    };
+  }
+
+  const out: { ok: boolean; [key: string]: unknown } = { ok: true };
+
+  if (typeof structured.count === "number") out.count = structured.count;
+  else if (typeof structured.total === "number") out.count = structured.total;
+  else if (Array.isArray(structured.rows)) out.count = structured.rows.length;
+  else if (Array.isArray(structured.queries)) out.count = structured.queries.length;
+  else if (Array.isArray(structured.pages)) out.count = structured.pages.length;
+  else if (Array.isArray(structured.ideas)) out.count = structured.ideas.length;
+  else if (Array.isArray(structured.runs)) out.count = structured.runs.length;
+  else if (Array.isArray(structured.recommendations)) out.count = structured.recommendations.length;
+
+  if (typeof structured.clicks === "number") out.clicks = structured.clicks;
+  if (typeof structured.impressions === "number") out.impressions = structured.impressions;
+
+  if (structured.overview && typeof structured.overview === "object") {
+    const ov = structured.overview as Record<string, unknown>;
+    if (typeof ov.clicks === "number") out.clicks = ov.clicks;
+    if (typeof ov.impressions === "number") out.impressions = ov.impressions;
+  }
+
+  if (structured.scores && typeof structured.scores === "object") {
+    const sc = structured.scores as Record<string, unknown>;
+    if (typeof sc.performance === "number") out.score = sc.performance;
+  }
+  if (Array.isArray(structured.failures)) {
+    out.failuresCount = structured.failures.length;
+  }
+
+  return out;
+}
+
+async function logMcpTrace(params: {
+  userId: string;
+  keyId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  result: { ok: boolean; [key: string]: unknown };
+  durationMs: number;
+  client: string;
+}) {
+  try {
+    const { mcp_calls, usage_daily } = await getCollections();
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10); // "YYYY-MM-DD"
+
+    await mcp_calls.insertOne({
+      ts: now,
+      userId: params.userId,
+      keyId: params.keyId,
+      tool: params.tool,
+      args: params.args,
+      result: params.result,
+      durationMs: params.durationMs,
+      client: params.client,
+    });
+
+    const isOk = params.result.ok !== false;
+    await usage_daily.updateOne(
+      { date: today, userId: params.userId, tool: params.tool },
+      {
+        $inc: {
+          calls: 1,
+          okCalls: isOk ? 1 : 0,
+          errorCalls: isOk ? 0 : 1,
+          totalLatencyMs: params.durationMs,
+        },
+        $setOnInsert: {
+          date: today,
+          userId: params.userId,
+          tool: params.tool,
+          avgLatencyMs: params.durationMs,
+        },
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error("[mcp-telemetry] trace logging failed:", err);
+  }
+}
+
+async function authenticate(req: IncomingMessage): Promise<{ userId: string; keyId: string }> {
   const header = req.headers.authorization ?? "";
   const match = /^Bearer\s+(\S+)/i.exec(header);
   if (!match) throw new Error("unauthorized: missing Bearer token");
@@ -83,11 +256,11 @@ async function authenticate(req: IncomingMessage): Promise<string> {
     const { users } = await getCollections();
     const first = await users.findOne({});
     if (!first) throw new Error("unauthorized: no user in database");
-    return first.userId;
+    return { userId: first.userId, keyId: "dev-override" };
   }
-  const userId = await resolveApiKey(match[1]);
-  if (!userId) throw new Error("unauthorized: invalid API key");
-  return userId;
+  const resolved = await resolveApiKey(match[1]);
+  if (!resolved) throw new Error("unauthorized: invalid API key");
+  return { userId: resolved.userId, keyId: resolved.keyId };
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown) {
@@ -141,10 +314,45 @@ async function enrichPages(
 // Server builder
 // ---------------------------------------------------------------------------
 
-async function buildServer(userId: string): Promise<McpServer> {
+async function buildServer(ctx: AuthContext): Promise<McpServer> {
   const server = new McpServer({ name: "impiseo", version: "1.1.0" });
 
+  // Wrap registerTool to automatically trace execution metrics
+  const origRegisterTool = server.registerTool.bind(server);
+  (server as any).registerTool = (name: any, config: any, handler: any) => {
+    return origRegisterTool(name, config, async (args: any) => {
+      const start = Date.now();
+      let res: any;
+      let isErr = false;
+      let errorMsg: string | undefined;
+      try {
+        res = await handler(args);
+        return res;
+      } catch (err: any) {
+        isErr = true;
+        errorMsg = err?.message || String(err);
+        throw err;
+      } finally {
+        const durationMs = Date.now() - start;
+        const structured = isErr
+          ? { ok: false, error: errorMsg }
+          : (res?.structuredContent as Record<string, unknown> | undefined);
+        const metrics = extractResultMetrics(structured, isErr || res?.isError);
+        logMcpTrace({
+          userId: ctx.userId,
+          keyId: ctx.keyId,
+          tool: String(name),
+          args: normalizeToolArgs(args),
+          result: metrics,
+          durationMs,
+          client: ctx.client,
+        }).catch((e) => console.error("[mcp-telemetry] log error:", e));
+      }
+    });
+  };
+
   const { users } = await getCollections();
+  const userId = ctx.userId;
   const user = await users.findOne({ userId });
   if (!user) throw new Error("Account not found");
 
@@ -767,8 +975,9 @@ const httpServer = createServer(async (req, res) => {
       sessionIdGenerator: undefined, // stateless mode
     });
 
-    const userId = await authenticate(req);
-    const server = await buildServer(userId);
+    const { userId, keyId } = await authenticate(req);
+    const client = detectClient(req, parsedBody, keyId);
+    const server = await buildServer({ userId, keyId, client });
 
     transport.onerror = (error) => {
       console.error("[mcp] transport error:", error);

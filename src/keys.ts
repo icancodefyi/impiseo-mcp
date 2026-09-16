@@ -46,8 +46,14 @@ export async function revokeApiKey(userId: string, prefix: string) {
   return deletedCount > 0;
 }
 
-/** Resolve a stored key from its hash. Returns the owning userId, if valid. */
-export async function resolveApiKey(fullKey: string): Promise<string | undefined> {
+export type ResolvedApiKey = {
+  userId: string;
+  keyId: string;
+  name: string;
+};
+
+/** Resolve a stored key from its hash. Returns the owning userId, prefix/keyId, and name. */
+export async function resolveApiKey(fullKey: string): Promise<ResolvedApiKey | undefined> {
   const keyHash = hashSecret(fullKey);
   const { api_keys } = await getCollections();
   const doc = await api_keys.findOne({ keyHash });
@@ -56,5 +62,9 @@ export async function resolveApiKey(fullKey: string): Promise<string | undefined
     { _id: doc._id },
     { $set: { lastUsedAt: new Date() } }
   );
-  return doc.userId;
+  return {
+    userId: doc.userId,
+    keyId: doc.prefix,
+    name: doc.name,
+  };
 }

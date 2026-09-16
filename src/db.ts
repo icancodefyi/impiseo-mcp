@@ -23,7 +23,7 @@ async function getClient(): Promise<MongoClient> {
 
 export async function getDb() {
   const client = await getClient();
-  const dbName = process.env.MONGO_DB || "seo_console";
+  const dbName = process.env.MONGO_DB || "impiseo";
   return client.db(dbName);
 }
 
@@ -152,6 +152,48 @@ export type ApiKeyDoc = {
   lastUsedAt?: Date;
 };
 
+
+export type McpCallDoc = {
+  ts: Date;
+  userId: string;
+  keyId: string; // key prefix for per-key breakdown
+  tool: string;
+  args: {
+    site?: string;
+    days?: number;
+    limit?: number;
+    offset?: number;
+    hasQuery?: boolean;
+    hasPage?: boolean;
+    query?: string;
+    strategy?: string;
+    [key: string]: unknown;
+  };
+  result: {
+    ok: boolean;
+    count?: number;
+    clicks?: number;
+    impressions?: number;
+    error?: string;
+    score?: number;
+    failuresCount?: number;
+    [key: string]: unknown;
+  };
+  durationMs: number;
+  client: string; // "Claude Code" vs "Cursor" vs "Windsurf" etc.
+};
+
+export type UsageDailyDoc = {
+  date: string; // YYYY-MM-DD
+  userId: string;
+  tool: string;
+  calls: number;
+  okCalls: number;
+  errorCalls: number;
+  avgLatencyMs: number;
+  totalLatencyMs?: number;
+};
+
 type Collections = {
   pages: import("mongodb").Collection<PageDoc>;
   page_content: import("mongodb").Collection<PageContentDoc>;
@@ -159,6 +201,8 @@ type Collections = {
   users: import("mongodb").Collection<UserDoc>;
   idea_runs: import("mongodb").Collection<IdeaRunDoc>;
   api_keys: import("mongodb").Collection<ApiKeyDoc>;
+  mcp_calls: import("mongodb").Collection<McpCallDoc>;
+  usage_daily: import("mongodb").Collection<UsageDailyDoc>;
 };
 
 let collections: Collections | null = null;
@@ -166,7 +210,7 @@ let collections: Collections | null = null;
 export async function getCollections(): Promise<Collections> {
   if (collections) return collections;
   const client = await getClient();
-  const db = client.db(process.env.MONGO_DB || "seo_console");
+  const db = client.db(process.env.MONGO_DB || "impiseo");
 
   const pages = db.collection<PageDoc>("pages");
   const page_content = db.collection<PageContentDoc>("page_content");
@@ -174,7 +218,9 @@ export async function getCollections(): Promise<Collections> {
   const users = db.collection<UserDoc>("users");
   const idea_runs = db.collection<IdeaRunDoc>("idea_runs");
   const api_keys = db.collection<ApiKeyDoc>("api_keys");
+  const mcp_calls = db.collection<McpCallDoc>("mcp_calls");
+  const usage_daily = db.collection<UsageDailyDoc>("usage_daily");
 
-  collections = { pages, page_content, rec_enhancements, users, idea_runs, api_keys };
+  collections = { pages, page_content, rec_enhancements, users, idea_runs, api_keys, mcp_calls, usage_daily };
   return collections;
 }
